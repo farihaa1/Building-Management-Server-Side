@@ -27,12 +27,16 @@ async function run() {
     const apartmentCollection = client
       .db("managementDb")
       .collection("apartments");
+    const announcementsCollection = client
+      .db("managementDb")
+      .collection("announcements");
     // const userCollection = client.db("managementDb").collection("users");
 
     app.get("/apartments", async (req, res) => {
       const { page, size } = req.query;
       const limit = parseInt(size);
       const skip = parseInt(page) * limit;
+      const count = await apartmentCollection.estimatedDocumentCount();
 
       const apartments = await apartmentCollection
         .find()
@@ -40,13 +44,15 @@ async function run() {
         .limit(limit)
         .toArray();
 
-      res.json(apartments);
+      res.json({apartments, count});
     });
 
-    app.get("/apartmentsCount", async (req, res) => {
-      const count = await apartmentCollection.estimatedDocumentCount();
-      res.send({ count });
-    });
+    // announcements api
+    app.get("/announcements", async(req, res)=>{
+      const results =await announcementsCollection.find().toArray();
+      res.send(results)
+    })
+
 
     await client.db("admin").command({ ping: 1 });
     // console.log("Pinged your deployment. You successfully connected to MongoDB!");
