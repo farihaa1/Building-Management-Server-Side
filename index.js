@@ -40,18 +40,22 @@ async function run() {
     app.post("/jwt", async (req, res) => {
       const user = req.body;
       if (!user.email) {
-        return res.status(400).send({ message: "Email is required to generate token" });
+        return res
+          .status(400)
+          .send({ message: "Email is required to generate token" });
       }
-      const token = jwt.sign({ email: user.email }, process.env.ACCESS_TOKEN_SECRET, {
-        expiresIn: "1h",
-      });
+      const token = jwt.sign(
+        { email: user.email },
+        process.env.ACCESS_TOKEN_SECRET,
+        {
+          expiresIn: "1h",
+        }
+      );
       res.send({ token });
     });
-    
 
     // middlewares
     const verifyToken = (req, res, next) => {
-      // console.log('inside verify token', req.headers.authorization);
       if (!req.headers.authorization) {
         return res.status(401).send({ message: "unauthorized access" });
       }
@@ -70,34 +74,35 @@ async function run() {
       const email = req.decoded.email;
       const query = { email: email };
       const user = await userCollection.findOne(query);
-      const isAdmin = user?.role === "admin"||"Admin";
-      console.log(isAdmin);
-      console.log('user', user)
+      const isAdmin = user?.role === "admin" || "Admin";
+
       if (!isAdmin) {
         return res.status(403).send({ message: "forbidden access" });
       }
       next();
     };
 
+    app.get(
+      "/users/admin/:email",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const email = req.params.email;
+        if (email !== req.decoded.email) {
+          return res.status(403).send({ message: "Forbidden access" });
+        }
 
-    app.get("/users/admin/:email", verifyToken, verifyAdmin, async (req, res) => {
-      const email = req.params.email;
-      if (email !== req.decoded.email) {
-        return res.status(403).send({ message: "Forbidden access" });
+        const query = { email: email };
+        const user = await userCollection.findOne(query);
+        let admin = false;
+        if (user) {
+          admin = user?.role === "admin";
+        }
+        res.send({ admin });
       }
-    
-      const query = { email: email };
-      const user = await userCollection.findOne(query);
-      let admin = false;
-      if (user) {
-        admin = user?.role === 'admin';  
-      }
-      res.send({ admin });
-    });
-    
+    );
 
-    app.get("/users", verifyToken,verifyAdmin, async (req, res) => {
-      console.log(req.headers);
+    app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
       const result = await userCollection.find().toArray();
       res.send(result);
     });
@@ -168,7 +173,7 @@ async function run() {
       res.send(results);
     });
     // apply api
-    app.get("/apply", async (req, res) => {
+    app.get("/agreement-request", async (req, res) => {
       const results = await applyApartmentCollection.find().toArray();
       res.send(results);
     });
@@ -181,39 +186,98 @@ async function run() {
         blockName,
         apartmentNo,
         rent,
+        date,
       } = req.body;
 
-      try {
-        const existingApplication = await applyApartmentCollection.findOne({
-          email,
-          apartmentId,
+      const existingApplicant = await applyApartmentCollection.findOne({
+        email,
+      });
+      const existingApplication = await applyApartmentCollection.findOne({
+        apartmentId,
+      });
+
+      if (existingApplicant) {
+        return res.json({
+          message: "You have already applied for a apartment.",
         });
-
-        if (existingApplication) {
-          return res
-            .status(400)
-            .json({ message: "You have already applied for this apartment." });
-        }
-
-        const application = {
-          apartmentId,
-          email,
-          name,
-          floorNo,
-          blockName,
-          apartmentNo,
-          rent,
-          status: "pending",
-        };
-
-        const result = await applyApartmentCollection.insertOne(application);
-        res.json({ insertedId: result.insertedId });
-      } catch (error) {
-        res
-          .status(500)
-          .json({ message: "Failed to submit application", error });
       }
+      if (existingApplication) {
+        return res.json({
+          message: "Apartment is already booked",
+        });
+      }
+
+      const application = {
+        apartmentId,
+        email,
+        name,
+        floorNo,
+        blockName,
+        apartmentNo,
+        rent,
+        date,
+        status: "pending",
+      };
+
+      const result = await applyApartmentCollection.insertOne(application);
+      res.json({ insertedId: result.insertedId });
     });
+
+    // Accept an agreement request
+    app.patch(
+      "/agreement-request/accept/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = { $set: { status: "checked" } };
+
+        // Update the agreement request status
+        const updateResult = await applyApartmentCollection.updateOne(
+          filter,
+          updateDoc
+        );
+
+        // Retrieve the updated request
+        const request = await applyApartmentCollection.findOne(filter);
+
+        // Update the user's role to 'member'
+        const userFilter = { email: request.email };
+        const updateUserDoc = { $set: { role: "member" } };
+        await userCollection.updateOne(userFilter, updateUserDoc);
+
+        // Delete the agreement request from the collection
+        const deleteResult = await applyApartmentCollection.deleteOne(filter);
+
+        res.send({ updateResult, deleteResult });
+      }
+    );
+
+    // Reject an agreement request
+    app.patch(
+      "/agreement-request/reject/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = { $set: { status: "checked" } };
+
+        // Update the agreement request status
+        const updateResult = await applyApartmentCollection.updateOne(
+          filter,
+          updateDoc
+        );
+
+        // Delete the agreement request from the collection
+        const deleteResult = await applyApartmentCollection.deleteOne(filter);
+
+        res.send({ updateResult, deleteResult });
+      }
+    );
 
     await client.db("admin").command({ ping: 1 });
     // console.log("Pinged your deployment. You successfully connected to MongoDB!");
