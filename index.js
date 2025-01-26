@@ -81,6 +81,18 @@ async function run() {
       }
       next();
     };
+    const verifyMember = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const user = await userCollection.findOne(query);
+      const isMember = user?.role === "member";
+    
+      if (!isMember) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+      next();
+    };
+    
 
     app.get(
       "/users/admin/:email",
@@ -93,12 +105,13 @@ async function run() {
         }
 
         const query = { email: email };
-        const user = await userCollection.findOne(query);
+        const adminInfo = await userCollection.findOne(query);
         let admin = false;
-        if (user) {
-          admin = user?.role === "admin";
+        if (adminInfo) {
+          admin = adminInfo?.role === "admin";
         }
-        res.send({ admin });
+
+        res.send({ admin, adminInfo });
       }
     );
 
@@ -143,28 +156,94 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/apartments", async (req, res) => {
-      const page = parseInt(req.query.page) || 0;
-      const size = parseInt(req.query.size) || 6;
-      const minRent = parseInt(req.query.minRent) || 0;
-      const maxRent = parseInt(req.query.maxRent) || Number.MAX_SAFE_INTEGER;
 
-      const skip = page * size;
-      const filter = { rent: { $gte: minRent, $lte: maxRent } };
-
-      try {
+    app.get("/apartments", async (req, res) => {      
+     
+        const page = parseInt(req.query.page) || 0;
+        const size = parseInt(req.query.size) || 6;
+        const minRent = parseInt(req.query.minRent) || 0;
+        const maxRent = parseInt(req.query.maxRent) || Number.MAX_SAFE_INTEGER;
+    
+     
+        const query = {
+          rent: { $gte: minRent, $lte: maxRent },
+        };
+    
+    
+        const skip = page * size;
+    
+     
         const apartments = await apartmentCollection
-          .find(filter)
+          .find(query)
           .skip(skip)
           .limit(size)
           .toArray();
-
-        const count = await apartmentCollection.countDocuments(filter); // Correctly calculate total count
-
+    
+      
+        const count = await apartmentCollection.countDocuments(query);
+    
+     
         res.json({ apartments, count });
-      } catch (error) {
-        res.status(500).json({ message: "Failed to fetch apartments", error });
       }
+    );
+
+    app.get("/member/apartments/:email", verifyToken, verifyMember, async (req, res) => {
+      const email = req.params.email;
+    
+      // Check if the email in the token matches the email in the route parameter
+      if (email !== req.decoded.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+    
+      const query = { email: email };
+      console.log(email)
+      const result = await applyApartmentCollection.findOne(query);
+      console.log(result)
+    
+      if (!result) {
+        return res.status(404).send({ message: "Apartment not found" });
+      }
+    
+      res.send(result);
+    });
+    
+    
+
+    app.get("/admin/apartments", verifyToken, verifyAdmin, async (req, res) => {
+      const totalRooms = await apartmentCollection.countDocuments();
+
+      const availableRooms = await apartmentCollection.countDocuments({
+        status: "available",
+      });
+
+      const unavailableRooms = await apartmentCollection.countDocuments({
+        status: "unavailable",
+      });
+
+      const availablePercentage = (availableRooms / totalRooms) * 100;
+
+      const unavailablePercentage = (unavailableRooms / totalRooms) * 100;
+
+      const totalUsers = await userCollection.countDocuments();
+
+      const totalMembers = await userCollection.countDocuments({
+        role: "member",
+      });
+
+      const statistics = {
+        totalRooms,
+        availableRooms,
+        unavailableRooms,
+        availablePercentage,
+        unavailablePercentage,
+        totalUsers,
+        totalMembers,
+      };
+     
+
+      const result = await apartmentCollection.find().toArray();
+
+      res.send(result);
     });
 
     // announcements api
@@ -174,7 +253,8 @@ async function run() {
     });
     // apply api
     app.get("/agreement-request", async (req, res) => {
-      const results = await applyApartmentCollection.find().toArray();
+      const filter = {status: "pending"}
+      const results = await applyApartmentCollection.find(filter).toArray();
       res.send(results);
     });
     app.post("/apply", async (req, res) => {
@@ -239,6 +319,7 @@ async function run() {
           filter,
           updateDoc
         );
+        
 
         // Retrieve the updated request
         const request = await applyApartmentCollection.findOne(filter);
@@ -248,10 +329,64 @@ async function run() {
         const updateUserDoc = { $set: { role: "member" } };
         await userCollection.updateOne(userFilter, updateUserDoc);
 
-        // Delete the agreement request from the collection
-        const deleteResult = await applyApartmentCollection.deleteOne(filter);
+        res.send({ updateResult });
+      }
+    );
+    // get members
 
-        res.send({ updateResult, deleteResult });
+    app.get("/members", verifyToken, verifyAdmin, async (req, res) => {
+      // Define the filter to find users with the role 'member'
+      const filter = { role: "member" };
+
+      // Query the users collection to find matching documents
+      const members = await userCollection.find(filter).toArray();
+
+      if (members.length === 0) {
+        return res.json({ message: "No members found" });
+      }
+    
+
+      res.json(members);
+    });
+
+    app.get(
+      "/users/member/:email",
+      verifyToken,
+
+      async (req, res) => {
+        const email = req.params.email;
+        if (email !== req.decoded.email) {
+          return res.status(403).send({ message: "Forbidden access" });
+        }
+
+        const query = { email: email };
+        const user = await userCollection.findOne(query);
+        let member = false;
+        if (user) {
+          member = user?.role === "member";
+        }
+      
+        res.send({ member });
+      }
+    );
+
+    //remove members
+    app.patch(
+      "/users/remove-role",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const result = await userCollection.updateMany(
+            {},
+            { $unset: { role: "" } }
+          );
+          res.send({
+            message: `${result.modifiedCount} users' roles removed successfully.`,
+          });
+        } catch (error) {
+          res.status(500).send({ message: "Error removing roles", error });
+        }
       }
     );
 
