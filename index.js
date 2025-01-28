@@ -128,6 +128,16 @@ async function run() {
       }
     );
 
+
+    app.post('/payments', async(req, res)=>{
+      const paymentInfo = req.body;
+     
+      console.log("payment info",paymentInfo)
+      const paymentResult = await paymentCollection.insertOne(paymentInfo);
+      res.send(paymentResult)
+
+    })
+
     app.get(
       "/users/admin/:email",
       verifyToken,
