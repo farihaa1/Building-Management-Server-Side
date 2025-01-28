@@ -1,12 +1,19 @@
+require("dotenv").config();
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const express = require("express");
 const app = express();
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
-require("dotenv").config();
 const port = process.env.PORT || 5000;
 
-app.use(cors());
+const corsOptions = {
+  origin: ["http://localhost:5173", "http://localhost:5174"],
+  credentials: true,
+  optionSuccessStatus: 200,
+};
+
 app.use(express.json());
+app.use(cors(corsOptions));
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.cd15p.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -35,6 +42,7 @@ async function run() {
     const applyApartmentCollection = client
       .db("managementDb")
       .collection("appliedApartment");
+    const paymentCollection = client.db("managementDb").collection("payments");
 
     // jwt related api
     app.post("/jwt", async (req, res) => {
@@ -86,13 +94,39 @@ async function run() {
       const query = { email: email };
       const user = await userCollection.findOne(query);
       const isMember = user?.role === "member";
-    
+      console.log(isMember);
+
       if (!isMember) {
         return res.status(403).send({ message: "Forbidden access" });
       }
       next();
     };
-    
+
+    // payment api
+    app.post(
+      "/create-payment-intent",
+      verifyToken,
+      verifyMember,
+      async (req, res) => {
+
+        const { email } = req.body;
+        const apartment = await applyApartmentCollection.findOne({
+          email: email,
+        });
+        const amount = apartment.rent;
+
+        const payRent = parseInt(amount * 100);
+        console.log(amount, "amount inside the intent");
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: payRent,
+          currency: "usd",
+          payment_method_types: ["card"],
+         
+        });
+
+        res.send({ clientSecret: paymentIntent.client_secret });
+      }
+    );
 
     app.get(
       "/users/admin/:email",
@@ -156,58 +190,51 @@ async function run() {
       res.send(result);
     });
 
+    app.get("/apartments", async (req, res) => {
+      const page = parseInt(req.query.page) || 0;
+      const size = parseInt(req.query.size) || 6;
+      const minRent = parseInt(req.query.minRent) || 0;
+      const maxRent = parseInt(req.query.maxRent) || Number.MAX_SAFE_INTEGER;
 
-    app.get("/apartments", async (req, res) => {      
-     
-        const page = parseInt(req.query.page) || 0;
-        const size = parseInt(req.query.size) || 6;
-        const minRent = parseInt(req.query.minRent) || 0;
-        const maxRent = parseInt(req.query.maxRent) || Number.MAX_SAFE_INTEGER;
-    
-     
-        const query = {
-          rent: { $gte: minRent, $lte: maxRent },
-        };
-    
-    
-        const skip = page * size;
-    
-     
-        const apartments = await apartmentCollection
-          .find(query)
-          .skip(skip)
-          .limit(size)
-          .toArray();
-    
-      
-        const count = await apartmentCollection.countDocuments(query);
-    
-     
-        res.json({ apartments, count });
-      }
-    );
+      const query = {
+        rent: { $gte: minRent, $lte: maxRent },
+      };
 
-    app.get("/member/apartments/:email", verifyToken, verifyMember, async (req, res) => {
-      const email = req.params.email;
-    
-      // Check if the email in the token matches the email in the route parameter
-      if (email !== req.decoded.email) {
-        return res.status(403).send({ message: "Forbidden access" });
-      }
-    
+      const skip = page * size;
+
+      const apartments = await apartmentCollection
+        .find(query)
+        .skip(skip)
+        .limit(size)
+        .toArray();
+
+      const count = await apartmentCollection.countDocuments(query);
+
+      res.json({ apartments, count });
+    });
+
+    app.get("/user/:email", async (req, res) => {
+      const email = req.query.email;
       const query = { email: email };
-      console.log(email)
-      const result = await applyApartmentCollection.findOne(query);
-      console.log(result)
-    
-      if (!result) {
-        return res.status(404).send({ message: "Apartment not found" });
-      }
-    
+      const result = await userCollection.findOne(query);
       res.send(result);
     });
-    
-    
+
+    app.get(
+      "/member/apartments",
+      verifyToken,
+      verifyMember,
+      async (req, res) => {
+        const email = req.query?.email;
+        console.log("Received email:", email);
+
+        console.log(email);
+        const query = { email: email };
+        const result = await applyApartmentCollection.findOne(query);
+
+        res.send(result);
+      }
+    );
 
     app.get("/admin/apartments", verifyToken, verifyAdmin, async (req, res) => {
       const totalRooms = await apartmentCollection.countDocuments();
@@ -239,7 +266,6 @@ async function run() {
         totalUsers,
         totalMembers,
       };
-     
 
       const result = await apartmentCollection.find().toArray();
 
@@ -253,10 +279,11 @@ async function run() {
     });
     // apply api
     app.get("/agreement-request", async (req, res) => {
-      const filter = {status: "pending"}
+      const filter = { status: "pending" };
       const results = await applyApartmentCollection.find(filter).toArray();
       res.send(results);
     });
+
     app.post("/apply", async (req, res) => {
       const {
         apartmentId,
@@ -319,7 +346,6 @@ async function run() {
           filter,
           updateDoc
         );
-        
 
         // Retrieve the updated request
         const request = await applyApartmentCollection.findOne(filter);
@@ -344,7 +370,6 @@ async function run() {
       if (members.length === 0) {
         return res.json({ message: "No members found" });
       }
-    
 
       res.json(members);
     });
@@ -365,7 +390,7 @@ async function run() {
         if (user) {
           member = user?.role === "member";
         }
-      
+
         res.send({ member });
       }
     );
