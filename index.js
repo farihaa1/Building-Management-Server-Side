@@ -35,7 +35,7 @@ async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
     // await client.connect();
-    // Send a ping to confirm a successful connection
+   
     const userCollection = client.db("managementDb").collection("users");
     const apartmentCollection = client
       .db("managementDb")
@@ -60,7 +60,7 @@ async function run() {
         { email: user.email },
         process.env.ACCESS_TOKEN_SECRET,
         {
-          expiresIn: "1h",
+          expiresIn: "2h",
         }
       );
       res.send({ token });
@@ -97,7 +97,7 @@ async function run() {
       const email = req.decoded.email;
       const query = { email: email };
       const user = await userCollection.findOne(query);
-      const isMember = user?.role === "member";
+      const isMember = user?.role === "member" ||"member";
 
       if (!isMember) {
         return res.status(403).send({ message: "Forbidden access" });
@@ -159,7 +159,7 @@ async function run() {
         const adminInfo = await userCollection.findOne(query);
         let admin = false;
         if (adminInfo) {
-          admin = adminInfo?.role === "admin";
+          admin = adminInfo?.role === "admin" || "Admin";
         }
 
         res.send({ admin, adminInfo });
