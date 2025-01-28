@@ -7,7 +7,11 @@ const jwt = require("jsonwebtoken");
 const port = process.env.PORT || 5000;
 
 const corsOptions = {
-  origin: ["http://localhost:5173", "http://localhost:5174"],
+  origin: [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "https://building-management-7130f.web.app",
+  ],
   credentials: true,
   optionSuccessStatus: 200,
 };
@@ -30,7 +34,7 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+    // await client.connect();
     // Send a ping to confirm a successful connection
     const userCollection = client.db("managementDb").collection("users");
     const apartmentCollection = client
@@ -94,7 +98,6 @@ async function run() {
       const query = { email: email };
       const user = await userCollection.findOne(query);
       const isMember = user?.role === "member";
-      console.log(isMember);
 
       if (!isMember) {
         return res.status(403).send({ message: "Forbidden access" });
@@ -108,7 +111,6 @@ async function run() {
       verifyToken,
       verifyMember,
       async (req, res) => {
-
         const { email } = req.body;
         const apartment = await applyApartmentCollection.findOne({
           email: email,
@@ -116,27 +118,32 @@ async function run() {
         const amount = apartment.rent;
 
         const payRent = parseInt(amount * 100);
-        console.log(amount, "amount inside the intent");
         const paymentIntent = await stripe.paymentIntents.create({
           amount: payRent,
           currency: "usd",
           payment_method_types: ["card"],
-         
         });
 
         res.send({ clientSecret: paymentIntent.client_secret });
       }
     );
 
+    app.get("/payments/:email", verifyToken, verifyMember, async (req, res) => {
+      const email = req.params.email;
+      const query = { email: email };
+      if (email !== req.decoded.email) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      const result = await paymentCollection.find(query).toArray();
+      res.send(result);
+    });
 
-    app.post('/payments', async(req, res)=>{
+    app.post("/payments", async (req, res) => {
       const paymentInfo = req.body;
-     
-      console.log("payment info",paymentInfo)
-      const paymentResult = await paymentCollection.insertOne(paymentInfo);
-      res.send(paymentResult)
 
-    })
+      const paymentResult = await paymentCollection.insertOne(paymentInfo);
+      res.send(paymentResult);
+    });
 
     app.get(
       "/users/admin/:email",
@@ -236,9 +243,7 @@ async function run() {
       verifyMember,
       async (req, res) => {
         const email = req.query?.email;
-        console.log("Received email:", email);
 
-        console.log(email);
         const query = { email: email };
         const result = await applyApartmentCollection.findOne(query);
 
@@ -449,7 +454,7 @@ async function run() {
       }
     );
 
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     // console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
     // Ensures that the client will close when you finish/error
