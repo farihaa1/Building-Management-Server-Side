@@ -208,15 +208,17 @@ async function run() {
     });
 
     app.get("/apartments", async (req, res) => {
-      const page = parseInt(req.query.page) || 0;
+      const page = parseInt(req.query.page) || 1;
       const size = parseInt(req.query.size) || 6;
       const minRent = parseInt(req.query.minRent) || 0;
       const maxRent = parseInt(req.query.maxRent) || Number.MAX_SAFE_INTEGER;
 
+    if(minRent || maxRent){
       const query = {
         rent: { $gte: minRent, $lte: maxRent },
       };
 
+    }
       const skip = page * size;
 
       const apartments = await apartmentCollection
@@ -226,6 +228,7 @@ async function run() {
         .toArray();
 
       const count = await apartmentCollection.countDocuments(query);
+      console.log(count)
 
       res.json({ apartments, count });
     });
