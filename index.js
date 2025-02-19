@@ -11,6 +11,7 @@ const corsOptions = {
     "http://localhost:5173",
     "http://localhost:5174",
     "https://building-management-7130f.web.app",
+    "https://building-management-site.netlify.app/",
   ],
   credentials: true,
   optionSuccessStatus: 200,
