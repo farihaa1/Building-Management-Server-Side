@@ -335,7 +335,7 @@ async function run() {
         res.send(result);
       }
     );
-
+    //get admin apartments routes
     app.get("/admin/apartments", verifyToken, verifyAdmin, async (req, res) => {
       const totalRooms = await apartmentCollection.countDocuments();
 
