@@ -19,7 +19,7 @@ const corsOptions = {
 app.use(express.json());
 app.use(cors(corsOptions));
 
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId, Code } = require("mongodb");
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.cd15p.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -35,7 +35,7 @@ async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
     // await client.connect();
-   
+
     const userCollection = client.db("managementDb").collection("users");
     const apartmentCollection = client
       .db("managementDb")
@@ -47,6 +47,61 @@ async function run() {
       .db("managementDb")
       .collection("appliedApartment");
     const paymentCollection = client.db("managementDb").collection("payments");
+    const couponsCollection = client.db("managementDb").collection("coupons");
+
+    app.post("/coupons", async (req, res) => {
+      const data = req.body;
+      data.status = "active";
+
+      const result = await couponsCollection.insertOne(data);
+      res.send(result);
+    });
+    app.get("/coupons", async (req, res) => {
+      const coupons = await couponsCollection.find().toArray();
+      res.send(coupons);
+    });
+    app.get("/coupons/:id", async (req, res) => {
+      const id = req.params.id;
+      const coupon = await couponsCollection.findOne({ _id: new ObjectId(id) });
+      if (!coupon) {
+        return res.status(404).send({ message: "Coupon not found" });
+      }
+      res.send(coupon);
+    });
+
+    app.patch("/coupons/:id", async (req, res) => {
+      const id = req.params.id;
+
+      try {
+        // Retrieve the current status of the coupon
+        const coupon = await couponsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!coupon) {
+          return res.status(404).send({ message: "Coupon not found" });
+        }
+
+        // Toggle the status between 'active' and 'expired'
+        const newStatus = coupon.status === "active" ? "expired" : "active";
+
+        // Update the coupon's status
+        const result = await couponsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status: newStatus } }
+        );
+
+        if (result.modifiedCount > 0) {
+          res.send({
+            message: `Coupon status updated to ${newStatus} successfully`,
+          });
+        } else {
+          res.status(400).send({ message: "Failed to update coupon status" });
+        }
+      } catch (error) {
+        res.status(500).send({ message: "Failed to update coupon status" });
+      }
+    });
 
     // jwt related api
     app.post("/jwt", async (req, res) => {
@@ -72,6 +127,7 @@ async function run() {
         return res.status(401).send({ message: "unauthorized access" });
       }
       const token = req.headers.authorization.split(" ")[1];
+
       jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
         if (err) {
           return res.status(401).send({ message: "unauthorized access" });
@@ -86,7 +142,7 @@ async function run() {
       const email = req.decoded.email;
       const query = { email: email };
       const user = await userCollection.findOne(query);
-      const isAdmin = user?.role === "admin" || "Admin";
+      const isAdmin = user?.role === "admin";
 
       if (!isAdmin) {
         return res.status(403).send({ message: "forbidden access" });
@@ -97,7 +153,7 @@ async function run() {
       const email = req.decoded.email;
       const query = { email: email };
       const user = await userCollection.findOne(query);
-      const isMember = user?.role === "member" ||"member";
+      const isMember = user?.role === "member";
 
       if (!isMember) {
         return res.status(403).send({ message: "Forbidden access" });
@@ -111,29 +167,54 @@ async function run() {
       verifyToken,
       verifyMember,
       async (req, res) => {
-        const { email } = req.body;
+        const { email, couponCode } = req.body;
         const apartment = await applyApartmentCollection.findOne({
           email: email,
         });
+
+        if (!apartment) {
+          return res.status(400).send({ message: "Apartment not found" });
+        }
+
         const amount = apartment.rent;
+        if (isNaN(amount) || amount <= 0) {
+          return res.status(400).send({ message: "Invalid rent amount" });
+        }
 
-        const payRent = parseInt(amount * 100);
-        const paymentIntent = await stripe.paymentIntents.create({
-          amount: payRent,
-          currency: "usd",
-          payment_method_types: ["card"],
-        });
+        const coupon = await couponsCollection.findOne({ code: couponCode });
+        console.log(amount, "coupon", coupon);
 
-        res.send({ clientSecret: paymentIntent.client_secret });
+        const discount = parseFloat(coupon.percent_off);
+        if (isNaN(discount)) {
+          return res.status(400).send({ message: "Invalid coupon discount" });
+        }
+
+        const discountedAmount = amount * (1 - discount / 100);
+        const finalAmount = Math.round(discountedAmount * 100); // Stripe expects amount in cents
+
+        if (isNaN(finalAmount)) {
+          return res.status(400).send({ message: "Invalid final amount" });
+        }
+
+        try {
+          const paymentIntent = await stripe.paymentIntents.create({
+            amount: finalAmount,
+            currency: "usd",
+            payment_method_types: ["card"],
+          });
+
+          res.send({ clientSecret: paymentIntent.client_secret });
+        } catch (error) {
+          console.error("Error creating payment intent:", error);
+          res.status(500).send({ message: "Internal Server Error" });
+        }
       }
     );
 
     app.get("/payments/:email", verifyToken, verifyMember, async (req, res) => {
       const email = req.params.email;
       const query = { email: email };
-      if (email !== req.decoded.email) {
-        return res.status(403).send({ message: "forbidden access" });
-      }
+
       const result = await paymentCollection.find(query).toArray();
       res.send(result);
     });
@@ -148,18 +229,16 @@ async function run() {
     app.get(
       "/users/admin/:email",
       verifyToken,
-      verifyAdmin,
+
       async (req, res) => {
         const email = req.params.email;
-        if (email !== req.decoded.email) {
-          return res.status(403).send({ message: "Forbidden access" });
-        }
 
         const query = { email: email };
         const adminInfo = await userCollection.findOne(query);
+
         let admin = false;
         if (adminInfo) {
-          admin = adminInfo?.role === "admin" || "Admin";
+          admin = adminInfo?.role === "admin";
         }
 
         res.send({ admin, adminInfo });
@@ -171,17 +250,22 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/users/admin/:id", async (req, res) => {
-      const id = req.params.id;
-      const filter = { _id: new ObjectId(id) };
-      const updatedDoc = {
-        $set: {
-          role: "admin",
-        },
-      };
-      const result = await userCollection.updateOne(filter, updatedDoc);
-      res.send(result);
-    });
+    app.patch(
+      "/users/admin/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const updatedDoc = {
+          $set: {
+            role: "admin",
+          },
+        };
+        const result = await userCollection.updateOne(filter, updatedDoc);
+        res.send(result);
+      }
+    );
 
     app.post("/users", async (req, res) => {
       const user = req.body;
@@ -211,10 +295,10 @@ async function run() {
       const page = parseInt(req.query.page);
       const size = parseInt(req.query.size);
       const minRent = parseInt(req.query.minRent);
-      const maxRent = parseInt(req.query.maxRent) ;
+      const maxRent = parseInt(req.query.maxRent);
       let query = {};
       if (minRent || maxRent) {
-         query = {
+        query = {
           rent: { $gte: minRent, $lte: maxRent },
         };
       }
@@ -227,7 +311,6 @@ async function run() {
         .toArray();
 
       const count = await apartmentCollection.countDocuments(query);
-      console.log(count);
 
       res.json({ apartments, count });
     });
@@ -256,17 +339,19 @@ async function run() {
     app.get("/admin/apartments", verifyToken, verifyAdmin, async (req, res) => {
       const totalRooms = await apartmentCollection.countDocuments();
 
-      const availableRooms = await apartmentCollection.countDocuments({
-        status: "available",
+      const unavailableRooms = await applyApartmentCollection.countDocuments({
+        status: "checked",
       });
 
-      const unavailableRooms = await apartmentCollection.countDocuments({
-        status: "unavailable",
-      });
+      const availableRooms = totalRooms - unavailableRooms;
+      const availablePercentage = ((availableRooms / totalRooms) * 100).toFixed(
+        2
+      );
 
-      const availablePercentage = (availableRooms / totalRooms) * 100;
-
-      const unavailablePercentage = (unavailableRooms / totalRooms) * 100;
+      const unavailablePercentage = (
+        (unavailableRooms / totalRooms) *
+        100
+      ).toFixed(2);
 
       const totalUsers = await userCollection.countDocuments();
 
@@ -284,11 +369,8 @@ async function run() {
         totalMembers,
       };
 
-      const result = await apartmentCollection.find().toArray();
-
-      res.send(result);
+      res.send(statistics);
     });
-
     // announcements api
     app.get("/announcements", async (req, res) => {
       const results = await announcementsCollection.find().toArray();
@@ -347,7 +429,6 @@ async function run() {
       res.json({ insertedId: result.insertedId });
     });
 
-    // Accept an agreement request
     app.patch(
       "/agreement-request/accept/:id",
       verifyToken,
@@ -358,16 +439,13 @@ async function run() {
         const filter = { _id: new ObjectId(id) };
         const updateDoc = { $set: { status: "checked" } };
 
-        // Update the agreement request status
         const updateResult = await applyApartmentCollection.updateOne(
           filter,
           updateDoc
         );
 
-        // Retrieve the updated request
         const request = await applyApartmentCollection.findOne(filter);
 
-        // Update the user's role to 'member'
         const userFilter = { email: request.email };
         const updateUserDoc = { $set: { role: "member" } };
         await userCollection.updateOne(userFilter, updateUserDoc);
@@ -377,18 +455,16 @@ async function run() {
     );
     // get members
 
-    app.get("/members", verifyToken, verifyAdmin, async (req, res) => {
-      // Define the filter to find users with the role 'member'
+    app.get("/members", verifyToken, async (req, res) => {
       const filter = { role: "member" };
 
-      // Query the users collection to find matching documents
       const members = await userCollection.find(filter).toArray();
 
       if (members.length === 0) {
         return res.json({ message: "No members found" });
       }
 
-      res.json(members);
+      res.send(members);
     });
 
     app.get(
@@ -397,9 +473,6 @@ async function run() {
 
       async (req, res) => {
         const email = req.params.email;
-        if (email !== req.decoded.email) {
-          return res.status(403).send({ message: "Forbidden access" });
-        }
 
         const query = { email: email };
         const user = await userCollection.findOne(query);
@@ -455,9 +528,6 @@ async function run() {
         res.send({ updateResult, deleteResult });
       }
     );
-
-    // await client.db("admin").command({ ping: 1 });
-    // console.log("Pinged your deployment. You successfully connected to MongoDB!");
   } finally {
     // Ensures that the client will close when you finish/error
     // await client.close();
